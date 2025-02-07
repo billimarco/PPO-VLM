@@ -281,7 +281,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-    tasks = ["Default-v1"] #["Obstacles-v1", "Green-v1", "Resized-v1", "Monsters-v1", "Default-v1", "Red-v1", "Blue-v1", "Shadows-v1"]
+    tasks = ["Default-Conf-v1"] #["Obstacles-v1", "Green-v1", "Resized-v1", "Monsters-v1", "Default-v1", "Red-v1", "Blue-v1", "Shadows-v1"]
     current_task = 0
     register_custom_folder(args.env_floder)
 
