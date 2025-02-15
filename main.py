@@ -9,10 +9,12 @@ from distutils.util import strtobool
 from typing import Optional
 
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch import int8
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
+from torchvision import models
 from envpool.vizdoom.registration import register_custom_folder
 
 import torch
@@ -23,6 +25,7 @@ import imageio
 
 import threading
 import time
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from functools import wraps
 
@@ -35,6 +38,23 @@ import numpy as np
 import multiprocessing as mp
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+def get_most_free_gpu():
+    """Finds the GPU with the most free memory using nvidia-smi."""
+    try:
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        # Run nvidia-smi to get free memory for each GPU
+        output = subprocess.check_output("nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits", shell=True)
+        free_memory = [int(x) for x in output.decode("utf-8").strip().split("\n")]
+        
+        # Find the index of the GPU with the highest free memory
+        best_gpu = free_memory.index(max(free_memory))
+        return best_gpu, free_memory[best_gpu]
+
+    except Exception as e:
+        print(f"Error detecting GPUs: {e}")
+        return None, None
 
 def save_frames_as_gif(frames, filename="episode_recording.gif"):
     """z
@@ -126,7 +146,12 @@ def test(model, test_envs, env_names, global_step, save_gif=False, trackmatrix=F
                 next_obs, reward, terminated, truncated, info = test_env.step(action.cpu().numpy())
 
                 next_done = torch.tensor(terminated | truncated).to(int8).numpy()
-                if not ep0_end: frames.append(next_obs[0][-3:])
+                if not ep0_end:
+                    frames.append(next_obs[0][-3:])
+                    #frames.append(next_obs[0][:3])
+                    #frames.append(next_obs[0][3:6])
+                    #frames.append(next_obs[0][6:9])
+                    #frames.append(next_obs[0][9:])
 
                 episode_rewards += reward
                 episode_len += 1
@@ -157,7 +182,9 @@ def test(model, test_envs, env_names, global_step, save_gif=False, trackmatrix=F
             writer.add_scalar(f"{env_names[i]}/kills", kills, global_step)
             writer.add_scalar(f"{env_names[i]}/success", success, global_step)
             # try:
-            if save_gif: save_frames_as_gif(frames=frames, filename=f"gifs/{env_names[i]}_{global_step}.gif")
+            if save_gif: 
+                os.makedirs("gifs", exist_ok=True)
+                save_frames_as_gif(frames=frames, filename=f"gifs/{env_names[i]}_{global_step}.gif")
             # except:
             #     print("Error saving image")
 
@@ -184,9 +211,9 @@ def parse_args():
                         help="if toggled, this experiment will be tracked with Weights and Biases")
     parser.add_argument("--offline", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
                         help="if toggled, this experiment will be tracked with Weights and Biases")
-    parser.add_argument("--wandb-project-name", type=str, default="None",
+    parser.add_argument("--wandb-project-name", type=str, default="VMRdata",
                         help="the wandb's project name")
-    parser.add_argument("--wandb-entity", type=str, default="None",
+    parser.add_argument("--wandb-entity", type=str, default="marcolbilli-universit-di-firenze",
                         help="the entity (team) of wandb's project")
 
     parser.add_argument("--env-floder", type=str, default=os.getcwd() + '/run_and_gun',
@@ -200,9 +227,9 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--num-envs", type=int, default=32,
                         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=128,
+    parser.add_argument("--num-steps", type=int, default=64,
                         help="the number of steps to run in each environment per policy rollout")
-    parser.add_argument("--updates-per-env", type=int, default=500,
+    parser.add_argument("--updates-per-env", type=int, default=1000,
                         help="the number of steps to run in each environment")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=False,
                         help="Toggle learning rate annealing for policy and value networks")
@@ -212,9 +239,9 @@ def parse_args():
                         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
                         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=4,
+    parser.add_argument("--num-minibatches", type=int, default=8,
                         help="the number of mini-batches")
-    parser.add_argument("--update-epochs", type=int, default=4,
+    parser.add_argument("--update-epochs", type=int, default=8,
                         help="the K epochs to update the policy")
     parser.add_argument("--norm-adv", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
                         help="Toggles advantages normalization")
@@ -236,7 +263,7 @@ def parse_args():
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     return args
 
-
+'''
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
@@ -267,7 +294,111 @@ class Agent(nn.Module):
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(hidden)
+'''
 
+class Agent(nn.Module):
+    def __init__(self, observation_space_shape, num_actions, network_type="cnn", actor_critic_mlp=False):
+        super().__init__()
+        self.network_type = network_type
+        self.actor_critic_mlp = actor_critic_mlp
+        match self.network_type:
+            case "cnn":
+                self.network = nn.Sequential(
+                    nn.Conv2d(observation_space_shape[0], 32, 8, stride=4),  # Adjusted for RGB input
+                    nn.ReLU(),
+                    nn.Conv2d(32, 64, 4, stride=2),
+                    nn.ReLU(),
+                    nn.Conv2d(64, 64, 3, stride=1),
+                    nn.ReLU(),
+                    nn.Flatten(),
+                    nn.Linear(64 * 7 * 7, 256),
+                    nn.LayerNorm(256),
+                    nn.LeakyReLU(),
+                    nn.Linear(256, 256),
+                    nn.LeakyReLU(),
+                )
+            case "resnet_s":
+                self.network = models.resnet18(weights=None)
+                self.network.conv1 = nn.Conv2d(in_channels=observation_space_shape[0],
+                       out_channels=self.network.conv1.out_channels,
+                       kernel_size=self.network.conv1.kernel_size,  
+                       stride=self.network.conv1.stride,  
+                       padding=self.network.conv1.padding,  
+                       bias=self.network.conv1.bias is not None)
+                self.network.fc = nn.Identity()
+            case "resnet_w":
+                self.network = models.resnet18(weights="IMAGENET1K_V1")
+                new_conv1 = nn.Conv2d(in_channels=observation_space_shape[0],
+                       out_channels=self.network.conv1.out_channels,
+                       kernel_size=self.network.conv1.kernel_size,  
+                       stride=self.network.conv1.stride,  
+                       padding=self.network.conv1.padding,  
+                       bias=self.network.conv1.bias is not None)
+                with torch.no_grad():
+                    for i in range(4):  # 4 frame
+                        new_conv1.weight[:, i*3:(i+1)*3] = self.network.conv1.weight
+                self.network.conv1 = new_conv1
+                self.network.fc = nn.Identity()
+            case "swin_s":
+                self.network = models.swin_transformer.swin_t(weights=None)
+                new_conv1 = nn.Conv2d(observation_space_shape[0], self.network.features[0][0].out_channels, 
+                              kernel_size=self.network.features[0][0].kernel_size, 
+                              stride=self.network.features[0][0].stride, 
+                              padding=self.network.features[0][0].padding, 
+                              bias=self.network.features[0][0].bias is not None)
+                with torch.no_grad():
+                    for i in range(4):  # 4 frame
+                        new_conv1.weight[:, i*3:(i+1)*3] = self.network.features[0][0].weight
+                self.network.features[0][0] = new_conv1
+                self.network.head = nn.Identity()
+            case "swin_w":
+                self.network = models.swin_transformer.swin_t(weights="IMAGENET1K_V1")
+                new_conv1 = nn.Conv2d(observation_space_shape[0], self.network.features[0][0].out_channels, 
+                              kernel_size=self.network.features[0][0].kernel_size, 
+                              stride=self.network.features[0][0].stride, 
+                              padding=self.network.features[0][0].padding, 
+                              bias=self.network.features[0][0].bias is not None)
+                with torch.no_grad():
+                    for i in range(4):  # 4 frame
+                        new_conv1.weight[:, i*3:(i+1)*3] = self.network.features[0][0].weight
+                self.network.features[0][0] = new_conv1
+                self.network.head = nn.Identity()
+            case default:#TODO
+                self.network = nn.Sequential(
+                    nn.Flatten(),
+                    nn.Linear(observation_space_shape[0] * observation_space_shape[1] * observation_space_shape[2], 256),
+                    nn.ReLU(),
+                    nn.Linear(256, 256),
+                    nn.ReLU()
+                )
+        
+        self.output_features = self.network(torch.randn(1, *observation_space_shape)).shape[1]
+                
+        if actor_critic_mlp:
+            self.actor = nn.Sequential(
+                nn.Linear(self.output_features, 256),
+                nn.ReLU(),
+                nn.Linear(256, num_actions)
+            )
+            self.critic = nn.Sequential(
+                nn.Linear(self.output_features, 256),
+                nn.ReLU(),
+                nn.Linear(256, 1)
+            )
+        else:
+            self.actor = nn.Linear(self.output_features, num_actions)
+            self.critic = nn.Linear(self.output_features, 1)
+            
+    def get_value(self, x):
+        return self.critic(self.network(x / 255.0))
+
+    def get_action_and_value(self, x, action=None):
+        hidden = self.network(x / 255.0)
+        logits = self.actor(hidden)
+        probs = Categorical(logits=logits)
+        if action is None:
+            action = probs.sample()
+        return action, probs.log_prob(action), probs.entropy(), self.critic(hidden)
 
 if __name__ == "__main__":
     args = parse_args()
@@ -278,8 +409,7 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
-
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    
 
     tasks = ["Default-Conf-v1"] #["Obstacles-v1", "Green-v1", "Resized-v1", "Monsters-v1", "Default-v1", "Red-v1", "Blue-v1", "Shadows-v1"]
     current_task = 0
@@ -310,9 +440,16 @@ if __name__ == "__main__":
             initial_ammo=initial_ammo,
         )
         print(task)
+        main_env_observation_space = env.observation_space
+        print("Observation Space Shape : " + str(main_env_observation_space.shape))
+        main_env_action_space = env.action_space
+        print("Action Space Number : " + str(main_env_action_space.n))
         envs_cont.append(env)
 
     envs = envs_cont[current_task]
+    observation_space_shape = envs.observation_space.shape
+    action_space_number = envs.action_space.n
+    #print(envs_cont)
     print("Creating test environments...")
     test_envs = []
     for task in tasks:
@@ -327,6 +464,10 @@ if __name__ == "__main__":
             initial_ammo=initial_ammo,
         )
         print(task)
+        test_env_observation_space = env.observation_space
+        print("Observation Space Shape : " + str(test_env_observation_space.shape))
+        test_env_action_space = env.action_space
+        print("Action Space Number : " + str(test_env_action_space.n))
         test_envs.append(env)
 
     # Wandb setup
@@ -350,9 +491,17 @@ if __name__ == "__main__":
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
-    print(f"First task! #{current_task + 1}: {tasks[current_task]}")
-
-    agent = Agent(envs).to(device)
+    print(f"Available GPUs: {torch.cuda.device_count()}")
+    best_gpu, free_mem = get_most_free_gpu()
+    if best_gpu is not None:
+        print(f"Using GPU {best_gpu} with {free_mem} MB free.")
+        device = torch.device(f"cuda:{best_gpu}")
+    else:
+        print("No GPU available, using CPU.")
+        device = torch.device("cpu")
+    #agent = Agent(envs).to(device)
+    agent = Agent(observation_space_shape, action_space_number,network_type="resnet_s",actor_critic_mlp=False).to(device)
+        
     if args.ewc:
         ewc = EWC(agent, ewc_lambda=250)
 
@@ -367,9 +516,31 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device).to(torch.bool)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    
+    # Take a gif of an observation sample #TRY
+    observation_sample = False
+    if(observation_sample):
+        envs.async_reset()
+        next_obs, _, _, _, _ = envs.recv()
+        '''
+        frames=[]
+        np.set_printoptions(threshold=np.inf, linewidth=200)
+        print(next_obs[0][:3])
+        print(next_obs[0][:3].shape)
+        frames.append(next_obs[0][:3])
+        frames.append(next_obs[0][3:6])
+        frames.append(next_obs[0][6:9])
+        frames.append(next_obs[0][9:])
+        '''
+        save_frames_as_gif(frames=[next_obs[0][:3]], filename=f"gifs/observation_sample_frame1.gif")
+        save_frames_as_gif(frames=[next_obs[0][3:6]], filename=f"gifs/observation_sample_frame2.gif")
+        save_frames_as_gif(frames=[next_obs[0][6:9]], filename=f"gifs/observation_sample_frame3.gif")
+        save_frames_as_gif(frames=[next_obs[0][9:]], filename=f"gifs/observation_sample_frame4.gif")
+        observation_sample = False
 
     # Initialize environments
     envs.async_reset()
+        
     # next_done = torch.zeros(batch_size).to(device)
     # Start training
     global_step = 0
@@ -380,7 +551,9 @@ if __name__ == "__main__":
     running_mean = 0.0
     running_variance = 0.0
     count = 1e-8  # Small initial value to prevent division by zero
-
+    
+    print(f"First task! #{current_task + 1}: {tasks[current_task]}")
+    
     for update in range(0, num_updates):
 
         if (update % args.updates_per_env == 0) and update != 0:
@@ -406,7 +579,7 @@ if __name__ == "__main__":
 
         if update % 20 == 0 and update % args.updates_per_env != 0:
             test_time = time.time()
-            test(agent, test_envs, tasks, global_step, False)
+            test(agent, test_envs, tasks, global_step)
             print(f"Tested! Time elaplesed {time.time() - test_time}")
             print()
             start_time = time.time()
@@ -428,6 +601,7 @@ if __name__ == "__main__":
 
             # Receive state from environments
             next_obs, reward, term, trunc, info = envs.recv()
+                
             env_ids = info["env_id"]
 
             # Store current observation
@@ -567,9 +741,8 @@ if __name__ == "__main__":
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     test(agent, test_envs, tasks, global_step, True, True)
-
+    '''
     # columns = [f"Task {i}" for i in range(results_matrix.shape[0])]
-
     results_matrix_20 = (results_matrix - 3.5) / 16.5
     results_matrix_20 = np.clip(results_matrix_20, 0, 1)
     results_matrix_tough = (results_matrix - 3.5) / 26.5
@@ -617,10 +790,11 @@ if __name__ == "__main__":
         "Tough/Forward Transfer": forward_transfer_tough,
         "Tough/Backward Transfer": backward_transfer_tough,
     })
-
+    '''
     envs.close()
     writer.close()
     for test_env in test_envs:
         test_env.close()
-
+        
+    os.makedirs("models", exist_ok=True)
     torch.save(agent, f"models/{args.exp_name}.pth")
