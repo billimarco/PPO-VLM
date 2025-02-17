@@ -227,9 +227,9 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--num-envs", type=int, default=32,
                         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=64,
+    parser.add_argument("--num-steps", type=int, default=128,
                         help="the number of steps to run in each environment per policy rollout")
-    parser.add_argument("--updates-per-env", type=int, default=1000,
+    parser.add_argument("--updates-per-env", type=int, default=500,
                         help="the number of steps to run in each environment")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=False,
                         help="Toggle learning rate annealing for policy and value networks")
@@ -239,9 +239,9 @@ def parse_args():
                         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
                         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=8,
+    parser.add_argument("--num-minibatches", type=int, default=4,
                         help="the number of mini-batches")
-    parser.add_argument("--update-epochs", type=int, default=8,
+    parser.add_argument("--update-epochs", type=int, default=4,
                         help="the K epochs to update the policy")
     parser.add_argument("--norm-adv", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
                         help="Toggles advantages normalization")
@@ -319,49 +319,19 @@ class Agent(nn.Module):
                 )
             case "resnet_s":
                 self.network = models.resnet18(weights=None)
-                self.network.conv1 = nn.Conv2d(in_channels=observation_space_shape[0],
-                       out_channels=self.network.conv1.out_channels,
-                       kernel_size=self.network.conv1.kernel_size,  
-                       stride=self.network.conv1.stride,  
-                       padding=self.network.conv1.padding,  
-                       bias=self.network.conv1.bias is not None)
+                self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
                 self.network.fc = nn.Identity()
             case "resnet_w":
                 self.network = models.resnet18(weights="IMAGENET1K_V1")
-                new_conv1 = nn.Conv2d(in_channels=observation_space_shape[0],
-                       out_channels=self.network.conv1.out_channels,
-                       kernel_size=self.network.conv1.kernel_size,  
-                       stride=self.network.conv1.stride,  
-                       padding=self.network.conv1.padding,  
-                       bias=self.network.conv1.bias is not None)
-                with torch.no_grad():
-                    for i in range(4):  # 4 frame
-                        new_conv1.weight[:, i*3:(i+1)*3] = self.network.conv1.weight
-                self.network.conv1 = new_conv1
+                self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
                 self.network.fc = nn.Identity()
             case "swin_s":
                 self.network = models.swin_transformer.swin_t(weights=None)
-                new_conv1 = nn.Conv2d(observation_space_shape[0], self.network.features[0][0].out_channels, 
-                              kernel_size=self.network.features[0][0].kernel_size, 
-                              stride=self.network.features[0][0].stride, 
-                              padding=self.network.features[0][0].padding, 
-                              bias=self.network.features[0][0].bias is not None)
-                with torch.no_grad():
-                    for i in range(4):  # 4 frame
-                        new_conv1.weight[:, i*3:(i+1)*3] = self.network.features[0][0].weight
-                self.network.features[0][0] = new_conv1
+                self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
                 self.network.head = nn.Identity()
             case "swin_w":
                 self.network = models.swin_transformer.swin_t(weights="IMAGENET1K_V1")
-                new_conv1 = nn.Conv2d(observation_space_shape[0], self.network.features[0][0].out_channels, 
-                              kernel_size=self.network.features[0][0].kernel_size, 
-                              stride=self.network.features[0][0].stride, 
-                              padding=self.network.features[0][0].padding, 
-                              bias=self.network.features[0][0].bias is not None)
-                with torch.no_grad():
-                    for i in range(4):  # 4 frame
-                        new_conv1.weight[:, i*3:(i+1)*3] = self.network.features[0][0].weight
-                self.network.features[0][0] = new_conv1
+                self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
                 self.network.head = nn.Identity()
             case default:#TODO
                 self.network = nn.Sequential(
@@ -372,7 +342,7 @@ class Agent(nn.Module):
                     nn.ReLU()
                 )
         
-        self.output_features = self.network(torch.randn(1, *observation_space_shape)).shape[1]
+        self.output_features = self.network(self.adapt_input(torch.randn(1, *observation_space_shape))).shape[1]
                 
         if actor_critic_mlp:
             self.actor = nn.Sequential(
@@ -389,10 +359,22 @@ class Agent(nn.Module):
             self.actor = nn.Linear(self.output_features, num_actions)
             self.critic = nn.Linear(self.output_features, 1)
             
+    def adapt_input(self, obs):
+        if self.network_type in ["resnet_s","swin_s"]:
+            x = self.conv_adapter(obs)
+        elif self.network_type in ["resnet_w","swin_w"]:
+            x = self.conv_adapter(obs)
+            x = nn.functional.interpolate(x, size=(224, 224), mode="bilinear")
+        else:
+            x = obs    
+        return x
+            
     def get_value(self, x):
+        x = self.adapt_input(x)
         return self.critic(self.network(x / 255.0))
 
     def get_action_and_value(self, x, action=None):
+        x = self.adapt_input(x)
         hidden = self.network(x / 255.0)
         logits = self.actor(hidden)
         probs = Categorical(logits=logits)
@@ -500,10 +482,11 @@ if __name__ == "__main__":
         print("No GPU available, using CPU.")
         device = torch.device("cpu")
     #agent = Agent(envs).to(device)
-    agent = Agent(observation_space_shape, action_space_number,network_type="resnet_s",actor_critic_mlp=False).to(device)
+    agent = Agent(observation_space_shape, action_space_number, network_type="resnet_s",actor_critic_mlp=False).to(device)
         
     if args.ewc:
         ewc = EWC(agent, ewc_lambda=250)
+        
 
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
