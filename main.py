@@ -223,6 +223,14 @@ def parse_args():
                         help="if toggled, this use shrink and perturb")
     parser.add_argument("--ewc", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
                         help="if toggled, this use elastic weight consolidation")
+    
+    # Network model type
+    parser.add_argument("--network-type", type=str, default="cnn", nargs="?", const="cnn",
+                        help="the network architecture")
+    parser.add_argument("--ac-mlp", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
+                        help="if toggled, actor and critic are mlp otherwise linear")
+    parser.add_argument("--pretrained-adapt", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
+                        help="if toggled, you pass only one frame of four as 224x224 image to network (shape (3,224,224))")
 
     # Algorithm specific arguments
     parser.add_argument("--num-envs", type=int, default=32,
@@ -239,10 +247,10 @@ def parse_args():
                         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
                         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=4,
-                        help="the number of mini-batches")
+    parser.add_argument("--num-minibatches", type=int, default=32,
+                        help="the number of mini-batches") #32 per swin, 4 per resnet
     parser.add_argument("--update-epochs", type=int, default=4,
-                        help="the K epochs to update the policy")
+                        help="the K epochs to update the policy") #4 per swin, 4 resnet
     parser.add_argument("--norm-adv", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
                         help="Toggles advantages normalization")
     parser.add_argument("--clip-coef", type=float, default=0.2,
@@ -297,10 +305,13 @@ class Agent(nn.Module):
 '''
 
 class Agent(nn.Module):
-    def __init__(self, observation_space_shape, num_actions, network_type="cnn", actor_critic_mlp=False):
+    def __init__(self, observation_space_shape, num_actions, network_type="cnn", actor_critic_mlp=False, pretrained_adapt=False):
         super().__init__()
         self.network_type = network_type
         self.actor_critic_mlp = actor_critic_mlp
+        self.pretrained_adapt = pretrained_adapt
+        print(f"Network Type : {self.network_type}")
+        print(f"Actor-Critic is MLP : {self.actor_critic_mlp}")
         match self.network_type:
             case "cnn":
                 self.network = nn.Sequential(
@@ -360,13 +371,19 @@ class Agent(nn.Module):
             self.critic = nn.Linear(self.output_features, 1)
             
     def adapt_input(self, obs):
-        if self.network_type in ["resnet_s","swin_s"]:
-            x = self.conv_adapter(obs)
-        elif self.network_type in ["resnet_w","swin_w"]:
-            x = self.conv_adapter(obs)
-            x = nn.functional.interpolate(x, size=(224, 224), mode="bilinear")
+        if not self.pretrained_adapt:
+            if self.network_type in ["resnet_s","swin_s"]:
+                x = self.conv_adapter(obs)
+            elif self.network_type in ["resnet_w","swin_w"]:
+                x = self.conv_adapter(obs)
+            else:
+                x = obs
         else:
-            x = obs    
+            if self.network_type in ["resnet_w","swin_w"]:
+                last_frame = obs[:, -3:, :, :]
+                x = nn.functional.interpolate(last_frame, size=(224, 224), mode="bilinear")
+            else:
+                x = obs    
         return x
             
     def get_value(self, x):
@@ -482,7 +499,7 @@ if __name__ == "__main__":
         print("No GPU available, using CPU.")
         device = torch.device("cpu")
     #agent = Agent(envs).to(device)
-    agent = Agent(observation_space_shape, action_space_number, network_type="resnet_s",actor_critic_mlp=False).to(device)
+    agent = Agent(observation_space_shape, action_space_number, network_type=args.network_type, actor_critic_mlp=args.ac_mlp, pretrained_adapt=args.pretrained_adapt).to(device)
         
     if args.ewc:
         ewc = EWC(agent, ewc_lambda=250)
@@ -491,6 +508,8 @@ if __name__ == "__main__":
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     results_matrix = np.zeros([len(test_envs), len(test_envs)])
+    
+    print(envs.observation_space.shape)
 
     # Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.observation_space.shape).to(device)
