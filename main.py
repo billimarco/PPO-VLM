@@ -402,9 +402,11 @@ class Agent(nn.Module):
         - Congela tutti gli altri pesi eccetto la testa (`head`).
         """
         for param in model.parameters():
-            param.requires_grad = False  
+            param.requires_grad = False
+            
+        modules_copy = list(model.named_modules())  
 
-        for name, module in model.named_modules():
+        for name, module in modules_copy:
             if isinstance(module, nn.Linear) and ("attn" in name or "fc" in name):
                 setattr(model, name, lora.Linear(module.in_features, module.out_features, r=rank))
                 print(f"Applied LoRA to {name}")
