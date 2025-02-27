@@ -11,6 +11,7 @@ from typing import Optional
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import loralib as lora
 from torch import int8
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
@@ -231,6 +232,8 @@ def parse_args():
                         help="if toggled, actor and critic are mlp otherwise linear")
     parser.add_argument("--pretrained-adapt", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
                         help="if toggled, you pass only one frame of four as 224x224 image to network (shape (3,224,224))")
+    parser.add_argument("--use-lora", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
+                        help="if toggled, you use LoRA in pretrained nets")
 
     # Algorithm specific arguments
     parser.add_argument("--num-envs", type=int, default=32,
@@ -305,13 +308,16 @@ class Agent(nn.Module):
 '''
 
 class Agent(nn.Module):
-    def __init__(self, observation_space_shape, num_actions, network_type="cnn", actor_critic_mlp=False, pretrained_adapt=False):
+    def __init__(self, observation_space_shape, num_actions, network_type="cnn", actor_critic_mlp=False, pretrained_adapt=False, use_lora=False):
         super().__init__()
         self.network_type = network_type
         self.actor_critic_mlp = actor_critic_mlp
         self.pretrained_adapt = pretrained_adapt
+        self.use_lora = use_lora
+        
         print(f"Network Type : {self.network_type}")
         print(f"Actor-Critic is MLP : {self.actor_critic_mlp}")
+        print(f"Using LoRA: {self.use_lora}")
         match self.network_type:
             case "cnn":
                 self.network = nn.Sequential(
@@ -336,6 +342,8 @@ class Agent(nn.Module):
                 self.network = models.resnet18(weights="IMAGENET1K_V1")
                 self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
                 self.network.fc = nn.Identity()
+                if self.use_lora:
+                    self.apply_lora(self.network)
             case "swin_s":
                 self.network = models.swin_transformer.swin_t(weights=None)
                 self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
@@ -344,6 +352,8 @@ class Agent(nn.Module):
                 self.network = models.swin_transformer.swin_t(weights="IMAGENET1K_V1")
                 self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
                 self.network.head = nn.Identity()
+                if self.use_lora:
+                    self.apply_lora(self.network)
             case default:#TODO
                 self.network = nn.Sequential(
                     nn.Flatten(),
@@ -385,6 +395,29 @@ class Agent(nn.Module):
             else:
                 x = obs    
         return x
+    
+    def apply_lora(self, model, rank=8):
+        """
+        - Applica LoRA ai layer di attenzione (Swin) e ai fully connected (ResNet).
+        - Congela tutti gli altri pesi eccetto la testa (`head`).
+        """
+        for param in model.parameters():
+            param.requires_grad = False  
+
+        for name, module in model.named_modules():
+            if isinstance(module, nn.Linear) and ("attn" in name or "fc" in name):
+                setattr(model, name, lora.Linear(module.in_features, module.out_features, r=rank))
+                print(f"Applied LoRA to {name}")
+
+        for name, param in model.named_parameters():
+            if "lora_" in name:
+                param.requires_grad = True  
+                
+        if hasattr(model, "head"):  
+            for param in model.head.parameters():
+                param.requires_grad = True  
+            print("Unfrozen Swin head")
+
             
     def get_value(self, x):
         x = self.adapt_input(x)
@@ -498,9 +531,13 @@ if __name__ == "__main__":
     else:
         print("No GPU available, using CPU.")
         device = torch.device("cpu")
+    
     #agent = Agent(envs).to(device)
-    agent = Agent(observation_space_shape, action_space_number, network_type=args.network_type, actor_critic_mlp=args.ac_mlp, pretrained_adapt=args.pretrained_adapt).to(device)
-        
+    agent = Agent(observation_space_shape, action_space_number, network_type=args.network_type, actor_critic_mlp=args.ac_mlp, pretrained_adapt=args.pretrained_adapt, use_lora=args.use_lora).to(device)
+    
+    for name, param in agent.network.named_parameters():
+        print(f"{name}: requires_grad = {param.requires_grad}")
+           
     if args.ewc:
         ewc = EWC(agent, ewc_lambda=250)
         
