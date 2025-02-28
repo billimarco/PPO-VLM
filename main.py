@@ -342,9 +342,16 @@ class Agent(nn.Module):
                 self.network = models.resnet18(weights="IMAGENET1K_V1")
                 self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
                 self.network.fc = nn.Identity()
-                # FREEZA i primi layer
-                for param in list(self.network.parameters())[:6]:  # Blocca i primi 6 blocchi (conv1 + primi 2 blocchi)
+                for param in self.network.conv1.parameters():
                     param.requires_grad = False
+                for param in self.network.layer1.parameters():
+                    param.requires_grad = True
+                for param in self.network.layer2.parameters():
+                    param.requires_grad = True
+                for param in self.network.layer3.parameters():
+                    param.requires_grad = True
+                for param in self.network.layer4.parameters():
+                    param.requires_grad = True
             case "swin_s":
                 self.network = models.swin_transformer.swin_t(weights=None)
                 self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
@@ -545,7 +552,17 @@ if __name__ == "__main__":
         ewc = EWC(agent, ewc_lambda=250)
         
 
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    #optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+
+    optimizer = optim.Adam([
+        {"params": agent.conv_adapter.parameters(), "lr": args.learning_rate},
+        {"params": agent.network.layer1.parameters(), "lr": args.learning_rate * 0.1},  # Layer iniziali meno allenati
+        {"params": agent.network.layer2.parameters(), "lr": args.learning_rate * 0.5},  # Un po' più di LR
+        {"params": agent.network.layer3.parameters(), "lr": args.learning_rate},        # LR normale
+        {"params": agent.network.layer4.parameters(), "lr": args.learning_rate},        # LR normale
+        {"params": agent.actor.parameters(), "lr": args.learning_rate},        # LR normale
+        {"params": agent.critic.layer4.parameters(), "lr": args.learning_rate},   
+    ], eps=1e-5)
 
     results_matrix = np.zeros([len(test_envs), len(test_envs)])
     
