@@ -250,7 +250,7 @@ def parse_args():
                         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
                         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=32,
+    parser.add_argument("--num-minibatches", type=int, default=4,
                         help="the number of mini-batches") #32 per swin, 4 per resnet
     parser.add_argument("--update-epochs", type=int, default=4,
                         help="the K epochs to update the policy") #4 per swin, 4 resnet
@@ -342,8 +342,9 @@ class Agent(nn.Module):
                 self.network = models.resnet18(weights="IMAGENET1K_V1")
                 self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
                 self.network.fc = nn.Identity()
-                if self.use_lora:
-                    self.apply_lora(self.network)
+                # FREEZA i primi layer
+                for param in list(self.network.parameters())[:6]:  # Blocca i primi 6 blocchi (conv1 + primi 2 blocchi)
+                    param.requires_grad = False
             case "swin_s":
                 self.network = models.swin_transformer.swin_t(weights=None)
                 self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
