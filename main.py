@@ -250,7 +250,7 @@ def parse_args():
                         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
                         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=4,
+    parser.add_argument("--num-minibatches", type=int, default=8,
                         help="the number of mini-batches") #32 per swin, 4 per resnet
     parser.add_argument("--update-epochs", type=int, default=4,
                         help="the K epochs to update the policy") #4 per swin, 4 resnet
@@ -561,7 +561,7 @@ if __name__ == "__main__":
         {"params": agent.network.layer3.parameters(), "lr": args.learning_rate},        # LR normale
         {"params": agent.network.layer4.parameters(), "lr": args.learning_rate},        # LR normale
         {"params": agent.actor.parameters(), "lr": args.learning_rate},        # LR normale
-        {"params": agent.critic.layer4.parameters(), "lr": args.learning_rate},   
+        {"params": agent.critic.parameters(), "lr": args.learning_rate},   
     ], eps=1e-5)
 
     results_matrix = np.zeros([len(test_envs), len(test_envs)])
