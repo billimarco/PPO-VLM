@@ -24,6 +24,10 @@ import cv2
 import envpool  # Assuming envpool is being used for the environment
 import imageio
 
+from transformers import AutoModelForImageClassification
+from transformers import SwinForImageClassification
+from peft import LoraConfig, get_peft_model
+
 import threading
 import time
 import subprocess
@@ -198,7 +202,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp-name", type=str, default="ppo_vanilla",
                         help="the name of this experiment")
-    parser.add_argument("--learning-rate", type=float, default=2.5e-4,
+    parser.add_argument("--learning-rate", type=float, default=1.0e-4,
                         help="the learning rate of the optimizer")
     parser.add_argument("--seed", type=int, default=9,
                         help="seed of the experiment")
@@ -231,7 +235,9 @@ def parse_args():
     parser.add_argument("--ac-mlp", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
                         help="if toggled, actor and critic are mlp otherwise linear")
     parser.add_argument("--pretrained-adapt", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
-                        help="if toggled, you pass only one frame of four as 224x224 image to network (shape (3,224,224))")
+                        help="if toggled, you pass only one frame of four")
+    parser.add_argument("--resize-images", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
+                        help="if toggled, you pass 224x224 images to network (usable only with pretrain adaptation -> shape (3,224,224))")
     parser.add_argument("--use-lora", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
                         help="if toggled, you use LoRA in pretrained nets")
 
@@ -250,7 +256,7 @@ def parse_args():
                         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
                         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=8,
+    parser.add_argument("--num-minibatches", type=int, default=16,
                         help="the number of mini-batches") #32 per swin, 4 per resnet
     parser.add_argument("--update-epochs", type=int, default=4,
                         help="the K epochs to update the policy") #4 per swin, 4 resnet
@@ -308,15 +314,18 @@ class Agent(nn.Module):
 '''
 
 class Agent(nn.Module):
-    def __init__(self, observation_space_shape, num_actions, network_type="cnn", actor_critic_mlp=False, pretrained_adapt=False, use_lora=False):
+    def __init__(self, observation_space_shape, num_actions, network_type="cnn", actor_critic_mlp=False, pretrained_adapt=False, resize_images=False, use_lora=False):
         super().__init__()
         self.network_type = network_type
         self.actor_critic_mlp = actor_critic_mlp
         self.pretrained_adapt = pretrained_adapt
+        self.resize_images = resize_images
         self.use_lora = use_lora
         
         print(f"Network Type : {self.network_type}")
         print(f"Actor-Critic is MLP : {self.actor_critic_mlp}")
+        print(f"Pretrain Adaptation : {self.pretrained_adapt}")
+        print(f"Resize Images to 224x224 : {self.resize_images}")
         print(f"Using LoRA: {self.use_lora}")
         match self.network_type:
             case "cnn":
@@ -362,6 +371,12 @@ class Agent(nn.Module):
                 self.network.head = nn.Identity()
                 if self.use_lora:
                     self.apply_lora(self.network)
+            case "swin_w_hf":
+                self.network = SwinForImageClassification.from_pretrained("microsoft/swin-tiny-patch4-window7-224")
+                self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
+                self.network.classifier = nn.Identity()
+                if self.use_lora:
+                    self.apply_lora(self.network)
             case default:#TODO
                 self.network = nn.Sequential(
                     nn.Flatten(),
@@ -370,8 +385,13 @@ class Agent(nn.Module):
                     nn.Linear(256, 256),
                     nn.ReLU()
                 )
-        
-        self.output_features = self.network(self.adapt_input(torch.randn(1, *observation_space_shape))).shape[1]
+                
+        #print(self.adapt_input(torch.randn(1, *observation_space_shape)).shape)
+        #print(self.network(self.adapt_input(torch.randn(1, *observation_space_shape))).logits.shape)
+        if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
+            self.output_features = self.network(self.adapt_input(torch.randn(1, *observation_space_shape))).shape[1]
+        elif self.network_type in ["swin_w_hf"]:
+            self.output_features = self.network(self.adapt_input(torch.randn(1, *observation_space_shape))).logits.shape[1]
                 
         if actor_critic_mlp:
             self.actor = nn.Sequential(
@@ -390,52 +410,89 @@ class Agent(nn.Module):
             
     def adapt_input(self, obs):
         if not self.pretrained_adapt:
-            if self.network_type in ["resnet_s","swin_s"]:
-                x = self.conv_adapter(obs)
-            elif self.network_type in ["resnet_w","swin_w"]:
+            if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w","swin_w_hf"]:
                 x = self.conv_adapter(obs)
             else:
                 x = obs
         else:
-            if self.network_type in ["resnet_w","swin_w"]:
+            if self.network_type in ["resnet_w","swin_w","swin_w_hf"]:
                 last_frame = obs[:, -3:, :, :]
-                x = nn.functional.interpolate(last_frame, size=(224, 224), mode="bilinear")
+                if self.resize_images:
+                    last_frame = nn.functional.interpolate(last_frame, size=(224, 224), mode="bilinear")
+                x = last_frame
             else:
                 x = obs    
         return x
     
-    def apply_lora(self, model, rank=8):
-        """
-        - Applica LoRA ai layer di attenzione (Swin) e ai fully connected (ResNet).
-        - Congela tutti gli altri pesi eccetto la testa (`head`).
-        """
-        for param in model.parameters():
-            param.requires_grad = False
-            
-        modules_copy = list(model.named_modules())  
-
-        for name, module in modules_copy:
-            if isinstance(module, nn.Linear) and ("attn" in name or "fc" in name):
-                setattr(model, name, lora.Linear(module.in_features, module.out_features, r=rank))
-                print(f"Applied LoRA to {name}")
-
-        for name, param in model.named_parameters():
-            if "lora_" in name:
-                param.requires_grad = True  
+    def apply_lora(self, model, rank=32):
+        if self.network_type == "swin_w":
+            for param in model.parameters():
+                param.requires_grad = False
                 
-        if hasattr(model, "head"):  
-            for param in model.head.parameters():
-                param.requires_grad = True  
-            print("Unfrozen Swin head")
+            '''
+            # Allena solo layer di attenzione e fully connected
+            for name, param in model.named_parameters():
+                if "attn" in name or "fc" in name:
+                    param.requires_grad = True
+            '''
+            
+            modules_copy = list(model.named_modules())  
 
+            for name, module in modules_copy:
+                if isinstance(module, nn.Linear) and ("attn" in name or "fc" in name):
+                    setattr(model, name, lora.Linear(module.in_features, module.out_features, r=rank, lora_alpha=rank*2))
+                    print(f"Applied LoRA to {name}")
+                    
+            for name, module in model.named_modules():
+                if "attn.qkv" in name or "attn.proj" in name:
+                    print(f"{name}: {module.__class__}")  
+
+            for name, param in model.named_parameters():
+                if "lora_" in name:
+                    param.requires_grad = True  
+                    
+            if hasattr(model, "head"):  
+                for param in model.head.parameters():
+                    param.requires_grad = True  
+                print("Unfrozen Swin head")
+        elif self.network_type == "swin_w_hf":
+            targets = []
+            supported_modules = (torch.nn.Linear, torch.nn.Embedding, torch.nn.Conv2d, torch.nn.Conv3d)
+    
+            # Itera sui moduli del modello
+            for name, module in model.named_modules():
+                if isinstance(module, supported_modules) and ('attention' in name or 'dense' in name):
+                        targets.append(name)
+            
+            print(targets)
+                
+            # Definisci la configurazione di LoRA
+            lora_config = LoraConfig(
+                r=8,  # Riduzione della dimensione del rank
+                lora_alpha=32,  # Fattore di scalatura
+                lora_dropout=0.1,  # Dropout per LoRA
+                target_modules=targets,  # Layer target (attenzione e fully connected)
+            )
+            
+            # Applica LoRA al modello usando PEFT
+            model = get_peft_model(model, lora_config)
+                
+        #print(model)
             
     def get_value(self, x):
         x = self.adapt_input(x)
-        return self.critic(self.network(x / 255.0))
+        if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
+            hidden = self.network(x / 255.0)
+        elif self.network_type in ["swin_w_hf"]:
+            hidden = self.network(x / 255.0).logits
+        return self.critic(hidden)
 
     def get_action_and_value(self, x, action=None):
         x = self.adapt_input(x)
-        hidden = self.network(x / 255.0)
+        if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
+            hidden = self.network(x / 255.0)
+        elif self.network_type in ["swin_w_hf"]:
+            hidden = self.network(x / 255.0).logits
         logits = self.actor(hidden)
         probs = Categorical(logits=logits)
         if action is None:
@@ -543,17 +600,25 @@ if __name__ == "__main__":
         device = torch.device("cpu")
     
     #agent = Agent(envs).to(device)
-    agent = Agent(observation_space_shape, action_space_number, network_type=args.network_type, actor_critic_mlp=args.ac_mlp, pretrained_adapt=args.pretrained_adapt, use_lora=args.use_lora).to(device)
+    agent = Agent(observation_space_shape, 
+                  action_space_number, 
+                  network_type=args.network_type, 
+                  actor_critic_mlp=args.ac_mlp, 
+                  pretrained_adapt=args.pretrained_adapt, 
+                  resize_images=args.resize_images, 
+                  use_lora=args.use_lora).to(device)
     
+    '''
     for name, param in agent.network.named_parameters():
         print(f"{name}: requires_grad = {param.requires_grad}")
+    '''
            
     if args.ewc:
         ewc = EWC(agent, ewc_lambda=250)
         
 
-    #optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
-
+    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    '''
     optimizer = optim.Adam([
         {"params": agent.conv_adapter.parameters(), "lr": args.learning_rate},
         {"params": agent.network.layer1.parameters(), "lr": args.learning_rate * 0.1},  # Layer iniziali meno allenati
@@ -563,7 +628,7 @@ if __name__ == "__main__":
         {"params": agent.actor.parameters(), "lr": args.learning_rate},        # LR normale
         {"params": agent.critic.parameters(), "lr": args.learning_rate},   
     ], eps=1e-5)
-
+    '''
     results_matrix = np.zeros([len(test_envs), len(test_envs)])
     
     print(envs.observation_space.shape)
