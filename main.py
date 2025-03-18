@@ -203,7 +203,7 @@ def parse_args():
     parser.add_argument("--exp-name", type=str, default="ppo_vanilla",
                         help="the name of this experiment")
     parser.add_argument("--learning-rate", type=float, default=1.0e-4,
-                        help="the learning rate of the optimizer")
+                        help="the learning rate of the optimizer")# 1.0e-3 lr, 2.5e-4 default, 1.0e-4 lrl, 2.5e-5 lrl--
     parser.add_argument("--seed", type=int, default=9,
                         help="seed of the experiment")
     parser.add_argument("--total-timesteps", type=int, default=99,
@@ -229,15 +229,15 @@ def parse_args():
     parser.add_argument("--ewc", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
                         help="if toggled, this use elastic weight consolidation")
     
-    # Network model type
+    # Agent specific arguments
     parser.add_argument("--network-type", type=str, default="cnn", nargs="?", const="cnn",
                         help="the network architecture")
     parser.add_argument("--ac-mlp", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
                         help="if toggled, actor and critic are mlp otherwise linear")
     parser.add_argument("--pretrained-adapt", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
-                        help="if toggled, you pass only one frame of four")
-    parser.add_argument("--resize-images", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
-                        help="if toggled, you pass 224x224 images to network (usable only with pretrain adaptation -> shape (3,224,224))")
+                        help="if toggled, you pass 224x224 images to network")
+    parser.add_argument("--forward-type", type=str, default="single_frame", nargs="?", const="single_frame",
+                        help="how input frames are passed to the network")#single_frame, multi_frame, conv_adapter
     parser.add_argument("--use-lora", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
                         help="if toggled, you use LoRA in pretrained nets")
 
@@ -256,7 +256,7 @@ def parse_args():
                         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
                         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=16,
+    parser.add_argument("--num-minibatches", type=int, default=64,
                         help="the number of mini-batches") #32 per swin, 4 per resnet
     parser.add_argument("--update-epochs", type=int, default=4,
                         help="the K epochs to update the policy") #4 per swin, 4 resnet
@@ -314,19 +314,19 @@ class Agent(nn.Module):
 '''
 
 class Agent(nn.Module):
-    def __init__(self, observation_space_shape, num_actions, network_type="cnn", actor_critic_mlp=False, pretrained_adapt=False, resize_images=False, use_lora=False):
+    def __init__(self, observation_space_shape, num_actions, network_type="cnn", actor_critic_mlp=False, pretrained_adapt=False, forward_type="single_frame", use_lora=False):
         super().__init__()
         self.network_type = network_type
         self.actor_critic_mlp = actor_critic_mlp
         self.pretrained_adapt = pretrained_adapt
-        self.resize_images = resize_images
+        self.forward_type = forward_type
         self.use_lora = use_lora
         
         print(f"Network Type : {self.network_type}")
         print(f"Actor-Critic is MLP : {self.actor_critic_mlp}")
-        print(f"Pretrain Adaptation : {self.pretrained_adapt}")
-        print(f"Resize Images to 224x224 : {self.resize_images}")
-        print(f"Using LoRA: {self.use_lora}")
+        print(f"Pretrain Adaptation (resize images to 224x224) : {self.pretrained_adapt}")
+        print(f"Forward Type : {self.forward_type}")
+        print(f"Using LoRA : {self.use_lora}")
         match self.network_type:
             case "cnn":
                 self.network = nn.Sequential(
@@ -385,13 +385,14 @@ class Agent(nn.Module):
                     nn.Linear(256, 256),
                     nn.ReLU()
                 )
-                
+        
+        print(self.network)        
         #print(self.adapt_input(torch.randn(1, *observation_space_shape)).shape)
-        #print(self.network(self.adapt_input(torch.randn(1, *observation_space_shape))).logits.shape)
+        #print(self.network(self.adapt_input(torch.randn(1, *observation_space_shape))).shape)
         if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
-            self.output_features = self.network(self.adapt_input(torch.randn(1, *observation_space_shape))).shape[1]
+            self.output_features = self.forward_backbone(self.adapt_input(torch.randn(1, *observation_space_shape))).shape[1]
         elif self.network_type in ["swin_w_hf"]:
-            self.output_features = self.network(self.adapt_input(torch.randn(1, *observation_space_shape))).logits.shape[1]
+            self.output_features = self.forward_backbone(self.adapt_input(torch.randn(1, *observation_space_shape))).shape[1]
                 
         if actor_critic_mlp:
             self.actor = nn.Sequential(
@@ -409,20 +410,82 @@ class Agent(nn.Module):
             self.critic = nn.Linear(self.output_features, 1)
             
     def adapt_input(self, obs):
-        if not self.pretrained_adapt:
-            if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w","swin_w_hf"]:
+        if self.pretrained_adapt:
+            obs = nn.functional.interpolate(obs, size=(224, 224), mode="bilinear")
+        #print(obs.shape)    
+        return obs
+
+    def forward_backbone(self, obs):
+        match self.forward_type:
+            case "single_frame":
+                x = obs[:, -3:, :, :]
+                #print(x.shape)
+                if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
+                    features = self.network(x / 255.0)
+                elif self.network_type in ["swin_w_hf"]:
+                    features = self.network(x / 255.0).logits
+                #print(features.shape)
+                return features
+            case "multi_frame_patch_concat":
+                bs, c, h, w = obs.shape
+                num_frames = 4
+                # Splitta l'input in 4 frame separati
+                frames = obs.view(bs, num_frames, c // num_frames, h, w)  # (batch_size, num_frames, 3, H, W)
+                #print(frames.shape)
+                # Processa ogni frame indipendentemente
+                all_patches = []
+                for i in range(4):  
+                    frame = frames[:, i, :, :, :]  # Estrai il frame i-esimo (batch_size, 3, 84, 84)
+                    #print(frame.shape)
+                    if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
+                        print("Not implemented")
+                    elif self.network_type in ["swin_w_hf"]:
+                        all_patches.append(self.network.swin.embeddings(frame / 255.0)[0])
+                        #print(self.network.swin.embeddings(frame / 255.0)[0])
+                concatenated_patches = torch.cat(all_patches, dim=1)
+                #print(f"First-layer patch embeddings shape: {concatenated_patches.shape}")
+                features = []
+                if self.network_type in ["swin_w_hf"]:
+                    outputs = self.network.swin.encoder(concatenated_patches, input_dimensions=(h, int(w/4)))
+                    #RICORDA DI GUARDARE IL FORWARD DEL MODELLO ORIGINALE PER CAPIRE COME ESTRARRE I LOGITS
+                    outputs = self.network.swin.layernorm(outputs.last_hidden_state)
+                    #print(outputs.shape)
+                    pooled_output = self.network.swin.pooler(outputs.transpose(1, 2))
+                    pooled_output = torch.flatten(pooled_output, 1)
+                    #print(pooled_output.shape)
+                    features = self.network.classifier(pooled_output)
+                #print(f"Final output shape after Swin encoder: {features.shape}")
+                return features
+            case "multi_frame_avg":
+                bs, c, h, w = obs.shape
+                num_frames = 4
+                # Splitta l'input in 4 frame separati
+                frames = obs.view(bs, num_frames, c // num_frames, h, w)  # (batch_size, num_frames, 3, H, W)
+                #print(frames.shape)
+                # Processa ogni frame indipendentemente
+                outputs = []
+                for i in range(4):  
+                    frame = frames[:, i, :, :, :]  # Estrai il frame i-esimo (batch_size, 3, 84, 84)
+                    #print(frame.shape)
+                    if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
+                        outputs.append(self.network(frame / 255.0))
+                    elif self.network_type in ["swin_w_hf"]:
+                        outputs.append(self.network(frame / 255.0).logits)
+
+                # Concatena i risultati e fai la media sui frame
+                outputs = torch.stack(outputs, dim=0)  # (num_frames, batch_size, num_classes)
+                #print(outputs.shape)
+                features = outputs.mean(dim=0)  # (batch_size, num_classes)
+                print(features.shape)
+                return features
+            case "conv_adapter":
                 x = self.conv_adapter(obs)
-            else:
-                x = obs
-        else:
-            if self.network_type in ["resnet_w","swin_w","swin_w_hf"]:
-                last_frame = obs[:, -3:, :, :]
-                if self.resize_images:
-                    last_frame = nn.functional.interpolate(last_frame, size=(224, 224), mode="bilinear")
-                x = last_frame
-            else:
-                x = obs    
-        return x
+                #print(x.shape)
+                if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
+                    features = self.network(x / 255.0)
+                elif self.network_type in ["swin_w_hf"]:
+                    features = self.network(x / 255.0).logits
+                return features 
     
     def apply_lora(self, model, rank=32):
         if self.network_type == "swin_w":
@@ -481,18 +544,12 @@ class Agent(nn.Module):
             
     def get_value(self, x):
         x = self.adapt_input(x)
-        if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
-            hidden = self.network(x / 255.0)
-        elif self.network_type in ["swin_w_hf"]:
-            hidden = self.network(x / 255.0).logits
+        hidden = self.forward_backbone(x)
         return self.critic(hidden)
 
     def get_action_and_value(self, x, action=None):
         x = self.adapt_input(x)
-        if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
-            hidden = self.network(x / 255.0)
-        elif self.network_type in ["swin_w_hf"]:
-            hidden = self.network(x / 255.0).logits
+        hidden = self.forward_backbone(x)
         logits = self.actor(hidden)
         probs = Categorical(logits=logits)
         if action is None:
@@ -524,7 +581,7 @@ if __name__ == "__main__":
     dict_envs = dict(zip(tasks, [None for _ in range(len(tasks))]))
     dict_test_envs = dict(zip(tasks, [None for _ in range(len(tasks))]))
 
-    print("Creating main environments...")
+    print("\n\nCreating main environments...")
     envs_cont = []
     for task in tasks:
         env = envpool.make(
@@ -538,6 +595,7 @@ if __name__ == "__main__":
             terminate_on_ammo_depletion=terminate_on_ammo_depletion,
             initial_ammo=initial_ammo,
         )
+        print("---------------------------------------")
         print(task)
         main_env_observation_space = env.observation_space
         print("Observation Space Shape : " + str(main_env_observation_space.shape))
@@ -545,11 +603,12 @@ if __name__ == "__main__":
         print("Action Space Number : " + str(main_env_action_space.n))
         envs_cont.append(env)
 
+    print("---------------------------------------")
     envs = envs_cont[current_task]
     observation_space_shape = envs.observation_space.shape
     action_space_number = envs.action_space.n
     #print(envs_cont)
-    print("Creating test environments...")
+    print("\n\nCreating test environments...")
     test_envs = []
     for task in tasks:
         env = envpool.make(
@@ -562,6 +621,7 @@ if __name__ == "__main__":
             terminate_on_ammo_depletion=terminate_on_ammo_depletion,
             initial_ammo=initial_ammo,
         )
+        print("---------------------------------------")
         print(task)
         test_env_observation_space = env.observation_space
         print("Observation Space Shape : " + str(test_env_observation_space.shape))
@@ -569,6 +629,7 @@ if __name__ == "__main__":
         print("Action Space Number : " + str(test_env_action_space.n))
         test_envs.append(env)
 
+    print("---------------------------------------")
     # Wandb setup
     if args.track:
         import wandb
@@ -590,6 +651,8 @@ if __name__ == "__main__":
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
+    print("\n\nCUDA available")
+    print("---------------------------------------")
     print(f"Available GPUs: {torch.cuda.device_count()}")
     best_gpu, free_mem = get_most_free_gpu()
     if best_gpu is not None:
@@ -598,16 +661,19 @@ if __name__ == "__main__":
     else:
         print("No GPU available, using CPU.")
         device = torch.device("cpu")
-    
+    print("---------------------------------------")
+        
+    print("\n\nAgent specific arguments")    
+    print("---------------------------------------")
     #agent = Agent(envs).to(device)
     agent = Agent(observation_space_shape, 
                   action_space_number, 
                   network_type=args.network_type, 
                   actor_critic_mlp=args.ac_mlp, 
                   pretrained_adapt=args.pretrained_adapt, 
-                  resize_images=args.resize_images, 
+                  forward_type=args.forward_type, 
                   use_lora=args.use_lora).to(device)
-    
+    print("---------------------------------------\n\n")
     '''
     for name, param in agent.network.named_parameters():
         print(f"{name}: requires_grad = {param.requires_grad}")
@@ -630,8 +696,6 @@ if __name__ == "__main__":
     ], eps=1e-5)
     '''
     results_matrix = np.zeros([len(test_envs), len(test_envs)])
-    
-    print(envs.observation_space.shape)
 
     # Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.observation_space.shape).to(device)
