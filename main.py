@@ -26,7 +26,7 @@ import imageio
 
 from transformers import AutoModelForImageClassification
 from transformers import SwinForImageClassification
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, TaskType
 
 import threading
 import time
@@ -202,7 +202,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp-name", type=str, default="ppo_vanilla",
                         help="the name of this experiment")
-    parser.add_argument("--learning-rate", type=float, default=1.0e-4,
+    parser.add_argument("--learning-rate", type=float, default=2.5e-4,
                         help="the learning rate of the optimizer")# 1.0e-3 lr, 2.5e-4 default, 1.0e-4 lrl, 2.5e-5 lrl--
     parser.add_argument("--seed", type=int, default=9,
                         help="seed of the experiment")
@@ -237,9 +237,15 @@ def parse_args():
     parser.add_argument("--pretrained-adapt", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
                         help="if toggled, you pass 224x224 images to network")
     parser.add_argument("--forward-type", type=str, default="single_frame", nargs="?", const="single_frame",
-                        help="how input frames are passed to the network")#single_frame, multi_frame, conv_adapter
+                        help="how input frames are passed to the network")#single_frame, multi_frame_patch_concat, conv_adapter
     parser.add_argument("--use-lora", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
                         help="if toggled, you use LoRA in pretrained nets")
+    
+     # LoRA specific arguments
+    parser.add_argument("--lora-rank", type=int, default=16,
+                        help="the rank variable of LoRA")
+    parser.add_argument("--lora-alpha", type=int, default=16,
+                        help="the alpha variable of LoRA")
 
     # Algorithm specific arguments
     parser.add_argument("--num-envs", type=int, default=32,
@@ -256,8 +262,8 @@ def parse_args():
                         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
                         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=64,
-                        help="the number of mini-batches") #32 per swin, 4 per resnet
+    parser.add_argument("--num-minibatches", type=int, default=8,
+                        help="the number of mini-batches") #32 per swin, 4 per resnet, 8 per cnn
     parser.add_argument("--update-epochs", type=int, default=4,
                         help="the K epochs to update the policy") #4 per swin, 4 resnet
     parser.add_argument("--norm-adv", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
@@ -321,6 +327,7 @@ class Agent(nn.Module):
         self.pretrained_adapt = pretrained_adapt
         self.forward_type = forward_type
         self.use_lora = use_lora
+        self.args = parse_args()
         
         print(f"Network Type : {self.network_type}")
         print(f"Actor-Critic is MLP : {self.actor_critic_mlp}")
@@ -337,7 +344,7 @@ class Agent(nn.Module):
                     nn.Conv2d(64, 64, 3, stride=1),
                     nn.ReLU(),
                     nn.Flatten(),
-                    nn.Linear(64 * 7 * 7, 256),
+                    nn.LazyLinear(256),
                     nn.LayerNorm(256),
                     nn.LeakyReLU(),
                     nn.Linear(256, 256),
@@ -386,10 +393,10 @@ class Agent(nn.Module):
                     nn.ReLU()
                 )
         
-        print(self.network)        
+        #print(self.network)        
         #print(self.adapt_input(torch.randn(1, *observation_space_shape)).shape)
         #print(self.network(self.adapt_input(torch.randn(1, *observation_space_shape))).shape)
-        if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
+        if self.network_type in ["cnn","resnet_s","swin_s","resnet_w","swin_w"]:
             self.output_features = self.forward_backbone(self.adapt_input(torch.randn(1, *observation_space_shape))).shape[1]
         elif self.network_type in ["swin_w_hf"]:
             self.output_features = self.forward_backbone(self.adapt_input(torch.randn(1, *observation_space_shape))).shape[1]
@@ -411,11 +418,14 @@ class Agent(nn.Module):
             
     def adapt_input(self, obs):
         if self.pretrained_adapt:
-            obs = nn.functional.interpolate(obs, size=(224, 224), mode="bilinear")
+            obs = nn.functional.interpolate(obs, size=(224, 224), mode="nearest")
         #print(obs.shape)    
         return obs
 
     def forward_backbone(self, obs):
+        if self.network_type in ["cnn"]:
+            features = self.network(obs / 255.0)
+            return features
         match self.forward_type:
             case "single_frame":
                 x = obs[:, -3:, :, :]
@@ -503,7 +513,7 @@ class Agent(nn.Module):
 
             for name, module in modules_copy:
                 if isinstance(module, nn.Linear) and ("attn" in name or "fc" in name):
-                    setattr(model, name, lora.Linear(module.in_features, module.out_features, r=rank, lora_alpha=rank*2))
+                    setattr(model, name, lora.Linear(module.in_features, module.out_features, r=self.args.lora_rank, lora_alpha=self.args.lora_alpha))
                     print(f"Applied LoRA to {name}")
                     
             for name, module in model.named_modules():
@@ -521,24 +531,29 @@ class Agent(nn.Module):
         elif self.network_type == "swin_w_hf":
             targets = []
             supported_modules = (torch.nn.Linear, torch.nn.Embedding, torch.nn.Conv2d, torch.nn.Conv3d)
-    
+
+            '''
             # Itera sui moduli del modello
             for name, module in model.named_modules():
                 if isinstance(module, supported_modules) and ('attention' in name or 'dense' in name):
                         targets.append(name)
             
             print(targets)
-                
+            '''
+            
             # Definisci la configurazione di LoRA
             lora_config = LoraConfig(
-                r=8,  # Riduzione della dimensione del rank
-                lora_alpha=32,  # Fattore di scalatura
+                r=self.args.lora_rank,  # Riduzione della dimensione del rank
+                lora_alpha=self.args.lora_alpha,  # Fattore di scalatura
                 lora_dropout=0.1,  # Dropout per LoRA
-                target_modules=targets,  # Layer target (attenzione e fully connected)
+                bias="none",
+                task_type=TaskType.FEATURE_EXTRACTION,
+                target_modules=["query", "key", "value", "dense"],  # Layer target (attenzione e fully connected)
             )
             
             # Applica LoRA al modello usando PEFT
             model = get_peft_model(model, lora_config)
+            model.print_trainable_parameters()
                 
         #print(model)
             
@@ -677,6 +692,9 @@ if __name__ == "__main__":
     '''
     for name, param in agent.network.named_parameters():
         print(f"{name}: requires_grad = {param.requires_grad}")
+    
+    print(f"Memoria allocata per il modello: {torch.cuda.memory_allocated() / (1024**2):.2f} MB")
+    print(f"Memoria riservata per il modello: {torch.cuda.memory_reserved() / (1024**2):.2f} MB")
     '''
            
     if args.ewc:
@@ -720,10 +738,13 @@ if __name__ == "__main__":
         frames.append(next_obs[0][6:9])
         frames.append(next_obs[0][9:])
         '''
-        save_frames_as_gif(frames=[next_obs[0][:3]], filename=f"gifs/observation_sample_frame1.gif")
-        save_frames_as_gif(frames=[next_obs[0][3:6]], filename=f"gifs/observation_sample_frame2.gif")
-        save_frames_as_gif(frames=[next_obs[0][6:9]], filename=f"gifs/observation_sample_frame3.gif")
-        save_frames_as_gif(frames=[next_obs[0][9:]], filename=f"gifs/observation_sample_frame4.gif")
+        if(args.pretrained_adapt):
+            next_obs = agent.adapt_input(torch.from_numpy(next_obs))
+            
+        save_frames_as_gif(frames=[next_obs[0][:3].cpu().numpy()], filename=f"gifs/observation_sample_frame1.gif")
+        save_frames_as_gif(frames=[next_obs[0][3:6].cpu().numpy()], filename=f"gifs/observation_sample_frame2.gif")
+        save_frames_as_gif(frames=[next_obs[0][6:9].cpu().numpy()], filename=f"gifs/observation_sample_frame3.gif")
+        save_frames_as_gif(frames=[next_obs[0][9:].cpu().numpy()], filename=f"gifs/observation_sample_frame4.gif")
         observation_sample = False
 
     # Initialize environments
