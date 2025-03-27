@@ -23,6 +23,7 @@ import numpy as np
 import cv2
 import envpool  # Assuming envpool is being used for the environment
 import imageio
+import pynvml # Monitoring GPU
 
 from transformers import AutoModelForImageClassification
 from transformers import SwinForImageClassification
@@ -61,6 +62,15 @@ def get_most_free_gpu():
         print(f"Error detecting GPUs: {e}")
         return None, None
 
+# Funzione per ottenere la memoria della GPU
+def get_gpu_memory(device):
+    mem_info = pynvml.nvmlDeviceGetMemoryInfo(device)
+    return {
+        'total': mem_info.total / 1024**2,  # Memoria totale in MB
+        'used': mem_info.used / 1024**2,    # Memoria usata in MB
+        'free': mem_info.free / 1024**2     # Memoria libera in MB
+    }
+    
 def save_frames_as_gif(frames, filename="episode_recording.gif"):
     """z
     Saves a list of frames as a GIF file.
@@ -262,7 +272,7 @@ def parse_args():
                         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
                         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=8,
+    parser.add_argument("--num-minibatches", type=int, default=32,
                         help="the number of mini-batches") #32 per swin, 4 per resnet, 8 per cnn
     parser.add_argument("--update-epochs", type=int, default=4,
                         help="the K epochs to update the policy") #4 per swin, 4 resnet
@@ -450,7 +460,9 @@ class Agent(nn.Module):
                     if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
                         print("Not implemented")
                     elif self.network_type in ["swin_w_hf"]:
-                        all_patches.append(self.network.swin.embeddings(frame / 255.0)[0])
+                        with torch.no_grad():
+                            embeddings = self.network.swin.embeddings(frame / 255.0)[0]
+                            all_patches.append(embeddings)
                         #print(self.network.swin.embeddings(frame / 255.0)[0])
                 concatenated_patches = torch.cat(all_patches, dim=1)
                 #print(f"First-layer patch embeddings shape: {concatenated_patches.shape}")
@@ -676,6 +688,10 @@ if __name__ == "__main__":
     else:
         print("No GPU available, using CPU.")
         device = torch.device("cpu")
+    pynvml.nvmlInit()
+    device_nvml = pynvml.nvmlDeviceGetHandleByIndex(best_gpu)
+    memory = get_gpu_memory(device_nvml)
+    print(f"Memoria iniziale: Totale = {memory['total']} MB, Usata = {memory['used']} MB, Libera = {memory['free']} MB")
     print("---------------------------------------")
         
     print("\n\nAgent specific arguments")    
@@ -696,6 +712,8 @@ if __name__ == "__main__":
     print(f"Memoria allocata per il modello: {torch.cuda.memory_allocated() / (1024**2):.2f} MB")
     print(f"Memoria riservata per il modello: {torch.cuda.memory_reserved() / (1024**2):.2f} MB")
     '''
+    memory = get_gpu_memory(device_nvml)
+    print(f"Memoria dopo creazione modello: Totale = {memory['total']} MB, Usata = {memory['used']} MB, Libera = {memory['free']} MB")
            
     if args.ewc:
         ewc = EWC(agent, ewc_lambda=250)
@@ -722,6 +740,9 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device).to(torch.bool)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    
+    memory = get_gpu_memory(device_nvml)
+    print(f"Memoria dopo storage: Totale = {memory['total']} MB, Usata = {memory['used']} MB, Libera = {memory['free']} MB")
     
     # Take a gif of an observation sample #TRY
     observation_sample = False
@@ -878,6 +899,7 @@ if __name__ == "__main__":
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
+                
 
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(
                     b_obs[mb_inds], b_actions.long()[mb_inds]
@@ -927,7 +949,7 @@ if __name__ == "__main__":
                 optimizer.step()
                 if args.s_p:
                     shrink_perturb(agent)
-
+                    
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
 
