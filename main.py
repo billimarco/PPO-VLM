@@ -212,7 +212,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp-name", type=str, default="ppo_vanilla",
                         help="the name of this experiment")
-    parser.add_argument("--learning-rate", type=float, default=2.5e-4,
+    parser.add_argument("--learning-rate", type=float, default=2.5e-5,
                         help="the learning rate of the optimizer")# 1.0e-3 lr, 2.5e-4 default, 1.0e-4 lrl, 2.5e-5 lrl--
     parser.add_argument("--seed", type=int, default=9,
                         help="seed of the experiment")
@@ -346,8 +346,12 @@ class Agent(nn.Module):
         print(f"Using LoRA : {self.use_lora}")
         match self.network_type:
             case "cnn":
+                if self.forward_type == "conv_adapter":
+                    obs_space = observation_space_shape[0]
+                elif self.forward_type == "single_frame":
+                    obs_space = 3
                 self.network = nn.Sequential(
-                    nn.Conv2d(observation_space_shape[0], 32, 8, stride=4),  # Adjusted for RGB input
+                    nn.Conv2d(obs_space, 32, 8, stride=4),  # Adjusted for RGB input
                     nn.ReLU(),
                     nn.Conv2d(32, 64, 4, stride=2),
                     nn.ReLU(),
@@ -368,6 +372,7 @@ class Agent(nn.Module):
                 self.network = models.resnet18(weights="IMAGENET1K_V1")
                 self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
                 self.network.fc = nn.Identity()
+                '''
                 for param in self.network.conv1.parameters():
                     param.requires_grad = False
                 for param in self.network.layer1.parameters():
@@ -378,6 +383,7 @@ class Agent(nn.Module):
                     param.requires_grad = True
                 for param in self.network.layer4.parameters():
                     param.requires_grad = True
+                '''
             case "swin_s":
                 self.network = models.swin_transformer.swin_t(weights=None)
                 self.conv_adapter = nn.Conv2d(observation_space_shape[0], 3, kernel_size=1)
@@ -433,14 +439,11 @@ class Agent(nn.Module):
         return obs
 
     def forward_backbone(self, obs):
-        if self.network_type in ["cnn"]:
-            features = self.network(obs / 255.0)
-            return features
         match self.forward_type:
             case "single_frame":
                 x = obs[:, -3:, :, :]
                 #print(x.shape)
-                if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
+                if self.network_type in ["cnn","resnet_s","swin_s","resnet_w","swin_w"]:
                     features = self.network(x / 255.0)
                 elif self.network_type in ["swin_w_hf"]:
                     features = self.network(x / 255.0).logits
@@ -501,11 +504,14 @@ class Agent(nn.Module):
                 print(features.shape)
                 return features
             case "conv_adapter":
-                x = self.conv_adapter(obs)
                 #print(x.shape)
-                if self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
+                if self.network_type in ["cnn"]:
+                    features = self.network(obs / 255.0)
+                elif self.network_type in ["resnet_s","swin_s","resnet_w","swin_w"]:
+                    x = self.conv_adapter(obs)
                     features = self.network(x / 255.0)
                 elif self.network_type in ["swin_w_hf"]:
+                    x = self.conv_adapter(obs)
                     features = self.network(x / 255.0).logits
                 return features 
     
