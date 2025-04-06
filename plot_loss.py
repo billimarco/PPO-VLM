@@ -20,16 +20,16 @@ models_per_file = {
     "entropy.csv": {
         "CNN_Single_Frame": "Group: CNN_Single_Frame_Adapted - losses/entropy",
         "CNN_Multi_Frame": "Group: CNN_Adapted - losses/entropy",
-        "ResNet18_Multi_Frame": "Group: ResNet_Adapted - losses/entropy",
         "ResNet18_Single_Frame": "Group: ResNet_Single_Frame_Adapted - losses/entropy",
+        "ResNet18_Multi_Frame": "Group: ResNet_Adapted - losses/entropy",
         "Swin_Single_Frame": "Group: Swin_Single_Frame_Adapted_lrl-- - losses/entropy",
         "Swin_Single_Frame_LoRA": "Group: Swin_Single_Frame_Adapted_LoRA - losses/entropy",
     },
     "exp_var.csv": {
         "CNN_Single_Frame": "Group: CNN_Single_Frame_Adapted - losses/explained_variance",
         "CNN_Multi_Frame": "Group: CNN_Adapted - losses/explained_variance",
-        "ResNet18_Multi_Frame": "Group: ResNet_Adapted - losses/explained_variance",
         "ResNet18_Single_Frame": "Group: ResNet_Single_Frame_Adapted - losses/explained_variance",
+        "ResNet18_Multi_Frame": "Group: ResNet_Adapted - losses/explained_variance",
         "Swin_Single_Frame": "Group: Swin_Single_Frame_Adapted_lrl-- - losses/explained_variance",
         "Swin_Single_Frame_LoRA": "Group: Swin_Single_Frame_Adapted_LoRA - losses/explained_variance",
     },
