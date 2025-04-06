@@ -5,6 +5,7 @@ import seaborn as sns
 import numpy as np
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from mpl_toolkits.axes_grid1.inset_locator import mark_inset
+from matplotlib.ticker import MultipleLocator
 
 
 # === SETUP ===
@@ -111,6 +112,7 @@ for idx, csv_file in enumerate(csv_files):
     # Configurazione specifica per il file corrente
     config = file_config.get(csv_file, {})
     ax.set_ylabel(config.get("ylabel", "Value"), fontsize=14)
+    ax.xaxis.set_major_locator(MultipleLocator(200000))
     ax.grid(True, alpha=0.3)
     if csv_file == "entropy.csv":
         ax.legend(loc="upper right", fontsize=9, frameon=True)

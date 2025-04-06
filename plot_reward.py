@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
 import seaborn as sns
 import numpy as np
+from matplotlib.ticker import MultipleLocator
 
 # === SETUP ===
 sns.set_style("white")
@@ -108,6 +109,7 @@ for idx, csv_file in enumerate(csv_files):
     # Configurazione specifica per il file corrente
     config = file_config.get(csv_file, {})
     ax.set_ylabel(config.get("ylabel", "Value"), fontsize=14)
+    ax.xaxis.set_major_locator(MultipleLocator(200000))
     ax.grid(True, alpha=0.3)
     if csv_file == "reward.csv":
         ax.legend(loc="upper left", fontsize=9, frameon=True)
