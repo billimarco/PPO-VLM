@@ -18,20 +18,20 @@ csv_files = ["entropy.csv", "exp_var.csv"]
 # Colonne da tracciare specifiche per ogni file CSV
 models_per_file = {
     "entropy.csv": {
-        "CNN_Single_Frame": "Group: CNN_Single_Frame_Adapted - losses/entropy",
-        "CNN_Multi_Frame": "Group: CNN_Adapted - losses/entropy",
-        "ResNet18_Single_Frame": "Group: ResNet_Single_Frame_Adapted - losses/entropy",
-        "ResNet18_Multi_Frame": "Group: ResNet_Adapted - losses/entropy",
-        "Swin_Single_Frame": "Group: Swin_Single_Frame_Adapted_lrl-- - losses/entropy",
-        "Swin_Single_Frame_LoRA": "Group: Swin_Single_Frame_Adapted_LoRA - losses/entropy",
+        "CNN Single Frame": "Group: CNN_Single_Frame_Adapted - losses/entropy",
+        "CNN Multi Frame": "Group: CNN_Adapted - losses/entropy",
+        "ResNet18 Single Frame": "Group: ResNet_Single_Frame_Adapted - losses/entropy",
+        "ResNet18 Multi Frame": "Group: ResNet_Adapted - losses/entropy",
+        "Swin Single Frame": "Group: Swin_Single_Frame_Adapted_lrl-- - losses/entropy",
+        "Swin Single Frame LoRA": "Group: Swin_Single_Frame_Adapted_LoRA - losses/entropy",
     },
     "exp_var.csv": {
-        "CNN_Single_Frame": "Group: CNN_Single_Frame_Adapted - losses/explained_variance",
-        "CNN_Multi_Frame": "Group: CNN_Adapted - losses/explained_variance",
-        "ResNet18_Single_Frame": "Group: ResNet_Single_Frame_Adapted - losses/explained_variance",
-        "ResNet18_Multi_Frame": "Group: ResNet_Adapted - losses/explained_variance",
-        "Swin_Single_Frame": "Group: Swin_Single_Frame_Adapted_lrl-- - losses/explained_variance",
-        "Swin_Single_Frame_LoRA": "Group: Swin_Single_Frame_Adapted_LoRA - losses/explained_variance",
+        "CNN Single Frame": "Group: CNN_Single_Frame_Adapted - losses/explained_variance",
+        "CNN Multi Frame": "Group: CNN_Adapted - losses/explained_variance",
+        "ResNet18 Single Frame": "Group: ResNet_Single_Frame_Adapted - losses/explained_variance",
+        "ResNet18 Multi Frame": "Group: ResNet_Adapted - losses/explained_variance",
+        "Swin Single Frame": "Group: Swin_Single_Frame_Adapted_lrl-- - losses/explained_variance",
+        "Swin Single Frame LoRA": "Group: Swin_Single_Frame_Adapted_LoRA - losses/explained_variance",
     },
 }
 
@@ -47,8 +47,9 @@ file_config = {
     },
 }
 
-# Creazione della figura con 3 sottogruppi (subplots)
+# Creazione della figura con 2 sottogruppi (subplots)
 fig, axes = plt.subplots(2, 1, figsize=(7, 8))  # 2 riga, 1 colonne
+#fig, axes = plt.subplots(1, 2, figsize=(14, 5))  # 1 riga, 2 colonne
 
 # Loop sui file CSV
 for idx, csv_file in enumerate(csv_files):
@@ -93,7 +94,7 @@ for idx, csv_file in enumerate(csv_files):
                 df[col],
                 label=model,
                 color=color,
-                linewidth=2.5,
+                linewidth=1.0,
                 alpha=1.0
             )
             
@@ -107,7 +108,7 @@ for idx, csv_file in enumerate(csv_files):
                 )
                 
             if csv_file == "exp_var.csv":
-                axins.plot(df["global_step"], df[col], label=model, color=color, linewidth=2.5, alpha=1.0)
+                axins.plot(df["global_step"], df[col], label=model, color=color, linewidth=1.0, alpha=1.0)
 
     # Configurazione specifica per il file corrente
     config = file_config.get(csv_file, {})

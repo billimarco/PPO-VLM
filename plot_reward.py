@@ -15,28 +15,28 @@ csv_files = ["reward.csv", "episode_len.csv", "kills.csv"]
 # Colonne da tracciare specifiche per ogni file CSV
 models_per_file = {
     "reward.csv": {
-        "CNN_Single_Frame": "Group: CNN_Single_Frame_Adapted - Default-Conf-v1/reward",
-        "CNN_Multi_Frame": "Group: CNN_Adapted - Default-Conf-v1/reward",
-        "ResNet18_Single_Frame": "Group: ResNet_Single_Frame_Adapted - Default-Conf-v1/reward",
-        "ResNet18_Multi_Frame": "Group: ResNet_Adapted - Default-Conf-v1/reward",
-        "Swin_Single_Frame": "Group: Swin_Single_Frame_Adapted_lrl-- - Default-Conf-v1/reward",
-        "Swin_Single_Frame_LoRA": "Group: Swin_Single_Frame_Adapted_LoRA - Default-Conf-v1/reward",
+        "CNN Single Frame": "Group: CNN_Single_Frame_Adapted - Default-Conf-v1/reward",
+        "CNN Multi Frame": "Group: CNN_Adapted - Default-Conf-v1/reward",
+        "ResNet18 Single Frame": "Group: ResNet_Single_Frame_Adapted - Default-Conf-v1/reward",
+        "ResNet18 Multi Frame": "Group: ResNet_Adapted - Default-Conf-v1/reward",
+        "Swin Single Frame": "Group: Swin_Single_Frame_Adapted_lrl-- - Default-Conf-v1/reward",
+        "Swin Single Frame LoRA": "Group: Swin_Single_Frame_Adapted_LoRA - Default-Conf-v1/reward",
     },
     "episode_len.csv": {
-        "CNN_Single_Frame": "Group: CNN_Single_Frame_Adapted - Default-Conf-v1/episode_len",
-        "CNN_Multi_Frame": "Group: CNN_Adapted - Default-Conf-v1/episode_len",
-        "ResNet18_Single_Frame": "Group: ResNet_Single_Frame_Adapted - Default-Conf-v1/episode_len",
-        "ResNet18_Multi_Frame": "Group: ResNet_Adapted - Default-Conf-v1/episode_len",
-        "Swin_Single_Frame": "Group: Swin_Single_Frame_Adapted_lrl-- - Default-Conf-v1/episode_len",
-        "Swin_Single_Frame_LoRA": "Group: Swin_Single_Frame_Adapted_LoRA - Default-Conf-v1/episode_len",
+        "CNN Single Frame": "Group: CNN_Single_Frame_Adapted - Default-Conf-v1/episode_len",
+        "CNN Multi Frame": "Group: CNN_Adapted - Default-Conf-v1/episode_len",
+        "ResNet18 Single Frame": "Group: ResNet_Single_Frame_Adapted - Default-Conf-v1/episode_len",
+        "ResNet18 Multi Frame": "Group: ResNet_Adapted - Default-Conf-v1/episode_len",
+        "Swin Single Frame": "Group: Swin_Single_Frame_Adapted_lrl-- - Default-Conf-v1/episode_len",
+        "Swin Single Frame LoRA": "Group: Swin_Single_Frame_Adapted_LoRA - Default-Conf-v1/episode_len",
     },
     "kills.csv": {
-        "CNN_Single_Frame": "Group: CNN_Single_Frame_Adapted - Default-Conf-v1/kills",
-        "CNN_Multi_Frame": "Group: CNN_Adapted - Default-Conf-v1/kills",
-        "ResNet18_Single_Frame": "Group: ResNet_Single_Frame_Adapted - Default-Conf-v1/kills",
-        "ResNet18_Multi_Frame": "Group: ResNet_Adapted - Default-Conf-v1/kills",
-        "Swin_Single_Frame": "Group: Swin_Single_Frame_Adapted_lrl-- - Default-Conf-v1/kills",
-        "Swin_Single_Frame_LoRA": "Group: Swin_Single_Frame_Adapted_LoRA - Default-Conf-v1/kills",
+        "CNN Single Frame": "Group: CNN_Single_Frame_Adapted - Default-Conf-v1/kills",
+        "CNN Multi Frame": "Group: CNN_Adapted - Default-Conf-v1/kills",
+        "ResNet18 Single Frame": "Group: ResNet_Single_Frame_Adapted - Default-Conf-v1/kills",
+        "ResNet18 Multi Frame": "Group: ResNet_Adapted - Default-Conf-v1/kills",
+        "Swin Single Frame": "Group: Swin_Single_Frame_Adapted_lrl-- - Default-Conf-v1/kills",
+        "Swin Single Frame LoRA": "Group: Swin_Single_Frame_Adapted_LoRA - Default-Conf-v1/kills",
     },
 }
 
@@ -58,6 +58,8 @@ file_config = {
 
 # Creazione della figura con 3 sottogruppi (subplots)
 fig, axes = plt.subplots(3, 1, figsize=(7, 12))  # 3 riga, 1 colonne
+#fig, axes = plt.subplots(1, 3, figsize=(18, 5))  # 1 riga, 3 colonne
+
 
 # Loop sui file CSV
 for idx, csv_file in enumerate(csv_files):
